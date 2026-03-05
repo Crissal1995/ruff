@@ -1,6 +1,6 @@
 # Plan: Migrate SpecializationBuilder from type_mappings HashMap to ConstraintSet
 
-## Status: Planning
+## Status: In progress (Phase 1 complete)
 
 ## Overview
 
@@ -393,6 +393,14 @@ For steps that might have broader impact (especially Phase 5 arms), also run:
 cargo nextest run --cargo-profile fast-test
 ```
 
+```sh
+cargo nextest run -p ty_python_semantic -p ty_ide --cargo-profile fast-test
+```
+
+For deeper validation (especially Phase 5 arms or Phase 6), run ecosystem analyses using the
+`local-ecosystem` skill on `aiortc`, `sympy`, `static-frame`, and `vision`, and compare
+diagnostics against a `main` baseline to ensure no regressions.
+
 If tests fail due to behavioral changes from CSA (usually more precise types), **do not update
 test expectations without confirming with @dcreager first**. Document which tests changed and
 why, so that the semantics-impacting changes can be reviewed for legitimacy. Use `cargo insta accept` for snapshot tests only after confirmation.
@@ -438,6 +446,8 @@ Key observations:
 ### Phase 1: Design the solution extraction hook API
 
 **Status: Not started**
+
+**Status: Complete ✅**
 **Difficulty: Medium** — requires design decisions about multi-path BDD handling and the hook
 signature, but the implementation is modest (refactoring existing code in `solutions()`).
 **Dependencies: None** — can start immediately.
@@ -446,20 +456,36 @@ The `solutions()` function in `constraints.rs` already computes per-typevar lowe
 for each BDD path, then makes a hardcoded choice about which type to return. The hook replaces
 that hardcoded choice.
 
-**Step 1.1**: Refactor `solutions()` to separate bounds computation from solution selection.
-Extract the per-path bounds computation into a reusable form. The current `Bounds` struct (with
-`lower: FxIndexSet<Type>` and `upper: FxIndexSet<Type>`) is internal to `solutions()` — make it
-(or something equivalent) available for the hook.
+**Step 1.1 ✅**: Refactored `solutions()` to separate bounds computation from solution selection.
+Extracted to module-level helpers:
 
-**Step 1.2**: Design the hook signature. The hook receives a typevar and its aggregated
-lower/upper bounds for a single BDD path, and returns either a chosen type or `None` (use
-default). For multi-path BDDs, the hook is called per-path, and results are combined (unioned)
-across paths — matching the current behavior of `add_type_mappings_from_constraint_set`.
+- `Bounds` struct: accumulates raw lower/upper bounds per typevar
+- `TypeVarBounds` struct: materialized lower/upper bounds (union of lowers, intersection of
+    uppers)
+- `compute_path_bounds()`: computes sorted BDD paths and materializes per-typevar bounds
+- `default_solve()`: the default solution selection logic for a single typevar
+- `solve_paths()`: applies a per-typevar solver function across all paths
 
-**Step 1.3**: Implement `build_with` on `SpecializationBuilder` alongside existing `build`.
-Initially backed by the HashMap — the hook receives `(mapped_type, mapped_type)` as both bounds
-for mapped typevars, and `(Never, object)` for unmapped ones. This lets us migrate callers before
-changing the internal representation.
+`solutions_inner` now calls `compute_path_bounds` + `solve_paths(... default_solve)`.
+
+**Step 1.2 ✅**: Designed and implemented the hook signature. Added `solutions_with` on
+`ConstraintSet` (and the internal `NodeId`/`InteriorNode` dispatch):
+
+- Hook: `FnMut(BoundTypeVarInstance, Type, Type) -> Option<Type>`
+    - Receives typevar + materialized lower/upper bounds per BDD path
+    - Returns `Some(ty)` to override, `None` to fall back to `default_solve`
+- For multi-path BDDs, the hook is called per-path; `solve_paths` collects valid paths
+- `Solutions<S>` is now generic over the container type: cached solutions use
+    `Solutions<Ref<'c, Vec<Solution<'db>>>>`, hook-based solutions use
+    `Solutions<Vec<Solution<'db>>>`
+
+**Step 1.3 ✅**: Implemented `build_with` on `SpecializationBuilder` alongside existing `build`.
+Initially backed by the HashMap:
+
+- Mapped typevars: hook receives `(typevar, mapped_ty, mapped_ty)` (equality bounds)
+- Unmapped typevars: hook receives `(typevar, Never, object)` (open bounds)
+- `Some(ty)` from hook overrides the mapped type; `None` uses default
+- Replaces the `mapped(...).build(...)` pattern in a single step
 
 ### Phase 2: Migrate Pattern 2 call sites (solution extraction hooks)
 
