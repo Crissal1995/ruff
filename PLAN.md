@@ -1,6 +1,6 @@
 # Plan: Migrate SpecializationBuilder from type_mappings HashMap to ConstraintSet
 
-## Status: In progress (Phases 1–2 complete)
+## Status: In progress (Phases 1–3 complete, all tests passing)
 
 ## Overview
 
@@ -82,7 +82,7 @@ solution extraction time (Category 2).
 
 ### 1. `preferred_type_mappings` + `infer_argument_types` callback (`call/bind.rs:3706-3897`)
 
-**Pattern: 1 (constraint conjunction)**
+Pattern: 1 (constraint conjunction)
 
 **Builds a specialization**: Yes — this is the main specialization for a generic function call.
 
@@ -125,7 +125,7 @@ requires design thought about where this check lives.
 
 ### 2. `maybe_promote` via `mapped()` (`call/bind.rs:3841`)
 
-**Pattern: 2 (solution extraction hook)**
+Pattern: 2 (solution extraction hook)
 
 **Builds a specialization**: Yes — same builder as #1, this is the `build` step.
 
@@ -145,7 +145,7 @@ needs.
 
 ### 3. `with_default()` in bidirectional argument inference (`infer/builder.rs:9425-9453`)
 
-**Pattern: 3 (standalone constraint set query)**
+Pattern: 3 (standalone constraint set query)
 
 **Builds a specialization**: Technically yes, but only as an intermediate — it creates a partial
 specialization to apply to parameter types for downstream bidirectional inference. It is not the
@@ -170,7 +170,7 @@ No `SpecializationBuilder` needed.
 
 ### 4. `infer_reverse_map_impl`'s internal builder (`generics.rs:2480-2510`)
 
-**Pattern: Goes away entirely (internal implementation detail of `infer_reverse`)**
+Pattern: Goes away entirely (internal implementation detail of `infer_reverse`)
 
 **Builds a specialization**: No — purely internal to the reverse inference mechanism.
 
@@ -189,7 +189,7 @@ needed.
 
 ### 5. `visit_specialization_impl` (`types.rs:1912-1921`)
 
-**Pattern: 3 (standalone constraint set query)**
+Pattern: 3 (standalone constraint set query)
 
 **Builds a specialization**: No — extracts per-typevar type context narrowing for downstream use.
 
@@ -210,7 +210,7 @@ This function uses **two** builders. They fall into different patterns.
 
 #### 6a. First builder: TCX query (`infer/builder.rs:10245-10289`)
 
-**Pattern: 3 (standalone constraint set query)**
+Pattern: 3 (standalone constraint set query)
 
 **Builds a specialization**: No — extracts per-typevar TCX constraints (`elt_tcx_constraints`)
 and per-typevar variance (`elt_tcx_variance`) for downstream use.
@@ -247,7 +247,7 @@ variance from the constraint structure.
 
 #### 6b. Second builder: element inference (`infer/builder.rs:10293-10414`)
 
-**Pattern: 1 (constraint conjunction)**
+Pattern: 1 (constraint conjunction)
 
 **Builds a specialization**: Yes — this is the final specialization for the collection type.
 
@@ -414,7 +414,7 @@ rather than relying on line numbers.
 
 ### Dependency graph
 
-```
+```text
 Phase 1 (hook API design)
   │
   ├──► Phase 2 (Pattern 2: solution extraction hooks)
@@ -445,9 +445,9 @@ Key observations:
 
 ### Phase 1: Design the solution extraction hook API
 
-**Status: Not started**
+Status: Not started
 
-**Status: Complete ✅**
+Status: Complete ✅
 **Difficulty: Medium** — requires design decisions about multi-path BDD handling and the hook
 signature, but the implementation is modest (refactoring existing code in `solutions()`).
 **Dependencies: None** — can start immediately.
@@ -489,7 +489,7 @@ Initially backed by the HashMap:
 
 ### Phase 2: Migrate Pattern 2 call sites (solution extraction hooks)
 
-**Status: Complete ✅**
+Status: Complete ✅
 **Difficulty: Easy–Medium** — the `maybe_promote` migration is mostly mechanical once the hook
 API exists.
 **Dependencies: Phase 1** (needs the `build_with` API).
@@ -510,7 +510,7 @@ including unmapped ones (with synthetic `Never`/`object` bounds), which caused h
 
 ### Phase 3: Migrate Pattern 3 call sites (standalone constraint set queries)
 
-**Status: Not started**
+Status: Complete ✅
 **Difficulty: Easy–Medium per step** — each is self-contained. Step 3.2 is the hardest due to
 variance tracking.
 **Dependencies: None** — can start immediately, in parallel with Phase 1.
@@ -522,39 +522,62 @@ new world, they bypass `SpecializationBuilder` entirely, using `ConstraintSet` A
 These are good candidates for early migration because they are self-contained — changing them
 doesn't affect the `SpecializationBuilder` API or its other callers.
 
-**Step 3.1**: Migrate `visit_specialization_impl` (`types.rs:1912`):
+**Step 3.1 ✅**: Migrated `visit_specialization_impl` (`types.rs`):
 
-- Replace `infer_reverse(tcx, alias_instance)` with forward CSA:
+- Replaced `infer_reverse(tcx, alias_instance)` with forward CSA:
     `alias_instance.when_constraint_set_assignable_to(tcx, ...)`.
-- Extract per-typevar types from the resulting constraint set's `solutions()`.
-- Build the `tcx_mappings` lookup from solutions.
-- Remove the temporary `SpecializationBuilder`.
+- Extracted per-typevar types from the resulting constraint set's `solutions()`.
+- Built the `tcx_mappings` lookup from solutions, unioning across BDD paths.
+- Removed the temporary `SpecializationBuilder`. Also added `Solutions` to the imports from
+    `constraints` in `types.rs`.
 
-**Step 3.2**: Migrate the TCX query in `infer_collection_literal_type`
-(`infer/builder.rs:10245`):
+**Step 3.3 ✅**: Migrated bidirectional argument inference (`infer/builder.rs`):
 
-- Replace `infer_reverse_map(tcx, collection_instance, ...)` with forward CSA:
-    `collection_instance.when_constraint_set_assignable_to(tcx, ...)`.
-- Extract per-typevar types from `solutions()`.
-- Compute per-typevar variance from the type structure using existing `variance_of` methods on
-    the collection class's typevars, rather than tracking it via the `f` callback. This avoids the
-    multi-path BDD ambiguity problem.
-- Apply partially-specialized-typevar filtering post-hoc on solutions.
-- Remove the first temporary `SpecializationBuilder`.
-
-**Step 3.3**: Migrate bidirectional argument inference (`infer/builder.rs:9425`):
-
-- Replace `infer_reverse(declared_return_ty, return_ty)` with forward CSA:
+- Replaced `infer_reverse(declared_return_ty, return_ty)` with forward CSA:
     `return_ty.when_constraint_set_assignable_to(declared_return_ty, ...)`.
-- Extract solutions via `solutions()`.
-- Create the intermediate specialization via `GenericContext::specialize_partial` (or
-    `specialize_recursive`), using `None` for unsolved typevars (so `fill_in_defaults` substitutes
-    the `UnspecializedTypeVar` marker or equivalent).
-- Remove the temporary `SpecializationBuilder` and `with_default` call.
+- Extracted solutions via `solutions()`, built `tcx_mappings` HashMap.
+- Created the intermediate specialization via `GenericContext::specialize_recursive`,
+    using `Some(mapped_ty)` for solved typevars and
+    `Some(Type::Dynamic(DynamicType::UnspecializedTypeVar))` for unsolved ones.
+- Removed the temporary `SpecializationBuilder` and `with_default` call.
+- Also added `Solutions` to the imports from `constraints` in `builder.rs`.
+
+**Step 3.2 ✅**: Migrated the TCX query in `infer_collection_literal`
+(`infer/builder.rs`):
+
+- Replaced `infer_reverse_map(tcx, collection_instance, ...)` with forward CSA:
+    `collection_instance.when_constraint_set_assignable_to(tcx, ...)`.
+- Extracted per-typevar types from `solutions_with()` (the hook-based variant).
+- **Variance approach**: Determined variance from the constraint *bounds* rather than from the
+    collection class type structure. The `solutions_with` hook receives raw lower/upper bounds
+    per typevar per BDD path:
+    - `lower = Never` (no lower bound) → covariant position
+    - `upper = object` (no upper bound) → contravariant position
+    - Both bounds set → invariant position
+        This correctly handles cases where the TCX type is a covariant superclass of the collection
+        (e.g., `Sequence[Any]` as TCX for `list[T]`), where the old reverse inference couldn't find
+        the relationship at all but the CSA correctly walks the MRO.
+- Applied partially-specialized-typevar filtering post-hoc on solutions.
+- **Key invariant**: variance entries are retained only for typevars that have actual constraint
+    entries (via `elt_tcx_variance.retain()`). This prevents false covariant variance from being
+    recorded for typevars whose solutions were filtered out by the unspecialized-typevar check.
+- Removed the first temporary `SpecializationBuilder`.
+- Removed `#[expect(dead_code)]` from `solutions_with` on `ConstraintSet` (now used).
+- **Cross-typevar filtering**: The SequentMap's transitivity reasoning can inject inferable
+    typevars into solutions. For example, for `dict[_KT, _VT] ≤ dict[str, int | str]`, the
+    constraints `_KT ≤ str` and `str ≤ _VT` share `str` as a pivot, deriving `_KT ≤ _VT`.
+    This adds `_KT` to `_VT`'s lower bound, producing `_KT | int | str` instead of `int | str`
+    and changing union ordering. Fixed by filtering inferable typevars from solutions via
+    `filter_union` + `as_typevar` + `is_inferable` — the solution should contain only concrete
+    types, not cross-typevar relationships.
+- **Test results**: All 1754 tests pass. One test expectation was updated:
+    - `literal_promotion.md:220`: `list[Y[Literal[1]]]` → `list[list[Literal[1]]]` — type
+        alias `Y` (defined as `type Y[T] = list[T]`) is resolved because the CSA normalizes
+        the annotation before creating constraints. Semantically equivalent; confirmed acceptable.
 
 ### Phase 4: Migrate Pattern 1 call sites (constraint conjunction) and finish eliminating `infer_reverse`
 
-**Status: Not started**
+Status: Not started
 **Difficulty: Hard** — Step 4.2 is the most complex migration in the entire plan, touching the
 core specialization inference logic with subtle heuristics (`partially_specialized_declared_type`,
 covariant filtering, retry logic).
@@ -600,7 +623,7 @@ Also remove `with_default` (last caller migrated in Phase 3 Step 3.3).
 
 ### Phase 5: Migrate `infer_map_impl` arms to constraint sets
 
-**Status: Not started**
+Status: Not started
 **Difficulty: Hard** — many arms with subtle heuristics, each potentially causing behavioral
 changes that require test updates. Can be done incrementally (one arm at a time).
 **Dependencies: Phase 4** (callers must be migrated so that the `f` callback and
@@ -634,7 +657,7 @@ Steps 5.1–5.4 are independent of each other and can be done in any order.
 
 ### Phase 6: Switch internal representation
 
-**Status: Not started**
+Status: Not started
 **Difficulty: Medium** — mostly mechanical once all constraints flow through constraint sets,
 but may surface edge cases in the interaction between the HashMap and constraint set paths.
 **Dependencies: Phase 5** (all `infer_map_impl` arms must use constraint sets).
