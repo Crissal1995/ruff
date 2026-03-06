@@ -1,6 +1,6 @@
 # Plan: Migrate SpecializationBuilder from type_mappings HashMap to ConstraintSet
 
-## Status: In progress (Phase 1 complete)
+## Status: In progress (Phases 1–2 complete)
 
 ## Overview
 
@@ -489,18 +489,24 @@ Initially backed by the HashMap:
 
 ### Phase 2: Migrate Pattern 2 call sites (solution extraction hooks)
 
-**Status: Not started**
+**Status: Complete ✅**
 **Difficulty: Easy–Medium** — the `maybe_promote` migration is mostly mechanical once the hook
 API exists.
 **Dependencies: Phase 1** (needs the `build_with` API).
 
-**Step 2.1**: Migrate `maybe_promote` (`call/bind.rs:3841`). Replace
+**Step 2.1 ✅**: Migrated `maybe_promote` (`call/bind.rs`). Replaced
 `builder.mapped(generic_context, maybe_promote).build(generic_context)` with
-`builder.build_with(generic_context, ...)`, where the hook applies promotion logic based on
-bounds. The hook closure closes over the return type, call expression TCX, and typevar
-bound/constraint info needed for the promotion decision.
+`builder.build_with(generic_context, maybe_promote)`, where the hook returns `Some(promoted)`
+to override or `None` to keep the default. The hook closure captures `self` for access to the
+return type, call expression TCX, and typevar bound/constraint info.
 
-**Step 2.2**: Remove `mapped()` from the public API.
+Also fixed `build_with` to only call the hook for *mapped* typevars (those with entries in the
+type mappings). Unmapped typevars are passed through as `None` to `specialize_recursive` so they
+get filled in with defaults. The original implementation called the hook for all typevars
+including unmapped ones (with synthetic `Never`/`object` bounds), which caused hooks like
+`maybe_promote` to produce `Some(Never)` for unmapped typevars instead of leaving them as `None`.
+
+**Step 2.2 ✅**: Removed `mapped()` from `SpecializationBuilder`'s public API.
 
 ### Phase 3: Migrate Pattern 3 call sites (standalone constraint set queries)
 
