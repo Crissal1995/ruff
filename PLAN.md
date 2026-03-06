@@ -1,6 +1,6 @@
 # Plan: Migrate SpecializationBuilder from type_mappings HashMap to ConstraintSet
 
-## Status: In progress (Phases 1–3 complete, all tests passing)
+## Status: In progress (Phases 1–3 complete, Phase 4 Steps 4.1 and 4.2 complete; all tests passing)
 
 ## Overview
 
@@ -577,7 +577,7 @@ doesn't affect the `SpecializationBuilder` API or its other callers.
 
 ### Phase 4: Migrate Pattern 1 call sites (constraint conjunction) and finish eliminating `infer_reverse`
 
-Status: Not started
+Status: Steps 4.1 and 4.2 complete
 **Difficulty: Hard** — Step 4.2 is the most complex migration in the entire plan, touching the
 core specialization inference logic with subtle heuristics (`partially_specialized_declared_type`,
 covariant filtering, retry logic).
@@ -589,26 +589,49 @@ covariant filtering, retry logic).
 - Step 4.3 depends on Steps 3.2 (TCX query migrated) and 4.1 (conjoin method exists).
 - Step 4.4 depends on Steps 3.1–3.3, 4.2, 4.3 (all `infer_reverse` callers migrated).
 
-**Step 4.1**: Add a method to `SpecializationBuilder` that conjoins a constraint set into the
-builder's pending state. During the transition (while the internal state is still a HashMap),
-this extracts solutions from the constraint set and adds them to the map — exactly what
-`add_type_mappings_from_constraint_set` already does. Later, when the internal state is a
-constraint set, this becomes a simple AND operation.
+**Step 4.1** ✅: Added `conjoin_constraint_set` and `insert_type_mapping` methods to
+`SpecializationBuilder`. Note: `conjoin_constraint_set` was subsequently removed (unused after
+Step 4.2 migrated to `solutions_with_inferable`). `insert_type_mapping` remains as `pub(crate)`
+for use by `bind.rs` to seed the builder with preferred types.
 
-**Step 4.2**: Migrate the `preferred_type_mappings` pattern in `infer_specialization`
-(`call/bind.rs:3706`):
+**Step 4.2** ✅: Migrate the `preferred_type_mappings` pattern in `infer_specialization`
+(`call/bind.rs:~3730`):
 
-- Replace `infer_reverse_map(tcx, return_ty, ...)` with a forward CSA check:
-    `return_ty.when_constraint_set_assignable_to(tcx, ...)` (with the function's typevars
-    inferable). This produces a constraint set representing the TCX preferences.
-- Conjoin those constraints into the builder (via Step 4.1).
-- Run argument inference, which also conjoins constraints into the builder.
-- Check satisfiability of the combined constraint set.
-- If unsatisfiable, rebuild without TCX constraints and retry.
-- The `f` callback in `infer_argument_types` becomes unnecessary.
-- The `partially_specialized_declared_type` heuristic: pre-filter TCX-derived types to exclude
-    those with unspecialized typevars before building the TCX constraint set, matching the current
-    callback's behavior.
+Replaced `infer_reverse_map(tcx, return_ty, ...)` with a forward CSA check:
+`return_ty.when_constraint_set_assignable_to(tcx, ...)`. Solutions are extracted via
+`solutions_with_inferable`, which handles non-inferable typevars from outer scopes.
+
+Implementation details:
+
+- **CSA handler** (`relation.rs`): No changes — the CSA always constrains all typevars,
+    regardless of inferability. Filtering happens at the solution extraction level, not at
+    constraint creation. This aligns with the design goal of eventually removing the `inferable`
+    parameter from `has_relation_to_impl`, with callers using `satisfied_by_all_typevars` for
+    inferable/non-inferable distinction.
+- **`is_cyclic_for`** (`constraints.rs`): Like `is_cyclic` but only includes inferable typevars
+    in the reachability graph. Non-inferable typevars that appear due to BDD constraint reordering
+    are excluded from cycle detection.
+- **`solutions_with_inferable`** (`constraints.rs`): Uses `is_cyclic_for` for cycle detection,
+    and skips non-inferable typevars during solution extraction (`solve_paths`). This avoids
+    `Err(())` from `default_solve` when non-inferable typevar bounds don't satisfy the typevar's
+    declared constraints. Cross-typevar propagation in `compute_path_bounds` means inferable
+    typevars can get bounds that reference non-inferable typevars.
+- **`contains_identity`** (`generics.rs`): Helper method on `InferableTypeVars` for checking
+    whether a `BoundTypeVarIdentity` is in the inferable set.
+- **Preferred type filtering** (`bind.rs`): Three filters on solutions:
+    1. Remove top-level inferable typevars (SequentMap transitivity artifacts)
+    1. Remove types with unspecialized typevars (partially specialized contexts)
+    1. Skip solutions where no union element is purely concrete (no typevars at any depth).
+        This handles cases where the TCX contains non-inferable typevars (e.g.,
+        `T@h | list[T@h]` from an outer generic scope) — the CSA produces solutions
+        referencing those typevars, but they don't provide useful concrete information.
+        Valid cases like `T@_ | int` (concrete `int` alongside outer-scope typevar) are
+        preserved because `int` passes the concrete check.
+
+Behavioral change (improvement): `annotations.md:611` — the old code couldn't infer preferred
+types through union TCXs (e.g., `list[Any] | None`). The CSA approach correctly infers `T=Any`
+from the annotation, changing the revealed type from `list[int] | None` to `list[Any] | None`.
+Test expectation updated.
 
 **Step 4.3**: Migrate TCX conjunction in `infer_collection_literal_type`'s second builder
 (`infer/builder.rs:10293`):
@@ -681,3 +704,29 @@ transition.
 
 **Step 6.5**: Remove `infer_map` — `infer` becomes a thin wrapper around
 `actual.when_constraint_set_assignable_to(formal, ...)` conjoined into the pending set.
+
+### Phase 7: Replace `preferred_type_mappings` with constraint set conjunction
+
+Status: Not started
+**Difficulty: Medium** — conceptually straightforward once Phase 6 is complete, but may require
+adjusting the fallback logic.
+**Dependencies: Phase 6** (the builder must maintain a constraint set).
+
+The `preferred_type_mappings` mechanism in `bind.rs` currently uses a two-phase approach:
+
+1. Extract preferred types from the TCX by solving `return_ty ≤ tcx` and filtering solutions
+    (variance, inferable typevars, concrete content checks)
+1. During argument inference, prefer TCX types unless argument types are incompatible
+1. If incompatible, re-infer from arguments alone
+
+This should be replaced by directly conjoining the TCX constraint set with argument constraints:
+
+1. Let `tcx_set = return_ty.when_constraint_set_assignable_to(tcx, ...)`
+1. Let `arg_set = ∧ᵢ (actual_i ≤ formal_i)` for all arguments
+1. Try solving `tcx_set ∧ arg_set` (combined)
+1. If unsatisfiable, fall back to just `arg_set`
+
+This eliminates the ad-hoc solution-level filtering (variance, inferable typevars, concrete
+content), since the constraint solver would naturally resolve the tension between TCX preferences
+and argument constraints. It also removes `insert_type_mapping`, `preferred_type_mappings`,
+`partially_specialized_declared_type`, and the `assignable_to_declared_type` retry logic.
