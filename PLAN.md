@@ -1,6 +1,6 @@
 # Plan: Migrate SpecializationBuilder from type_mappings HashMap to ConstraintSet
 
-## Status: In progress (Phases 1–3 complete, Phase 4 Steps 4.1 and 4.2 complete; all tests passing)
+## Status: In progress (Phases 1–4 complete; all tests passing)
 
 ## Overview
 
@@ -577,7 +577,7 @@ doesn't affect the `SpecializationBuilder` API or its other callers.
 
 ### Phase 4: Migrate Pattern 1 call sites (constraint conjunction) and finish eliminating `infer_reverse`
 
-Status: Steps 4.1 and 4.2 complete
+Status: Complete ✅
 **Difficulty: Hard** — Step 4.2 is the most complex migration in the entire plan, touching the
 core specialization inference logic with subtle heuristics (`partially_specialized_declared_type`,
 covariant filtering, retry logic).
@@ -633,16 +633,34 @@ types through union TCXs (e.g., `list[Any] | None`). The CSA approach correctly 
 from the annotation, changing the revealed type from `list[int] | None` to `list[Any] | None`.
 Test expectation updated.
 
-**Step 4.3**: Migrate TCX conjunction in `infer_collection_literal_type`'s second builder
-(`infer/builder.rs:10293`):
+**Step 4.3** ✅: Simplified the TCX injection in `infer_collection_literal_type`'s second builder
+(`infer/builder.rs`):
 
-- The TCX constraints extracted in Phase 3 Step 3.2 (now a standalone constraint set) are
-    conjoined into the element inference builder's pending state via the method from Step 4.1.
-- This replaces the current `builder.infer(Type::TypeVar(elt_ty), elt_tcx)` loop.
+- Replaced `builder.infer(Type::TypeVar(elt_ty), elt_tcx)` with
+    `builder.insert_type_mapping(elt_ty, elt_tcx)`, which directly inserts the type mapping
+    without going through `infer_map_impl`. This is semantically equivalent for collection
+    typevars (which have `object` bounds and always pass the bound check), and removes one
+    caller of the `infer`/`infer_map_impl` code path.
+- The covariant filtering and Unknown fallback logic remain unchanged.
+- Note: the original plan envisioned conjoining the raw CSA constraint set via
+    `conjoin_constraint_set`. That approach was not viable here because (a) covariant typevars
+    must be excluded from TCX injection (requiring filtering that ConstraintSet doesn't support),
+    and (b) typevars without TCX constraints need an explicit Unknown fallback. The direct
+    `insert_type_mapping` approach is the correct simplification at this stage; full constraint
+    set conjunction will happen in Phase 6 when the builder's internal representation changes.
 
-**Step 4.4**: Remove `infer_reverse`, `infer_reverse_map`, `infer_reverse_map_impl` from
-`SpecializationBuilder`. Remove the `UniqueSpecialization` variant from `TypeMapping`.
-Also remove `with_default` (last caller migrated in Phase 3 Step 3.3).
+**Step 4.4** ✅: Removed all dead code from the old reverse inference machinery:
+
+- Removed `infer_reverse`, `infer_reverse_map`, `infer_reverse_map_impl` from
+    `SpecializationBuilder`.
+- Removed `into_type_mappings` (only caller was inside `infer_reverse_map_impl`).
+- Removed `with_default` (had `#[expect(dead_code)]`; last caller migrated in Phase 3 Step 3.3).
+- Removed `UniqueSpecialization` variant from `TypeMapping` enum and all associated match arms
+    across `types.rs`, `generics.rs`, `known_instance.rs`, and `typevar.rs`.
+- Removed the `UniqueSpecialization`-specific branch in `Specialization::apply_type_mapping_impl`
+    that created synthetic type variables.
+- Cleaned up unused imports: `ruff_python_ast::name::Name` (generics.rs),
+    `std::cell::RefCell` (types.rs).
 
 ### Phase 5: Migrate `infer_map_impl` arms to constraint sets
 
