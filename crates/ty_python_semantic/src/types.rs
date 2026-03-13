@@ -726,6 +726,8 @@ pub enum Type<'db> {
     TypeGuard(TypeGuardType<'db>),
     /// A type that represents an inhabitant of a `TypedDict`.
     TypedDict(TypedDictType<'db>),
+    /// The infinite union of all `TypedDict` inhabitant types.
+    TypedDictTop,
     /// An aliased type (lazily not-yet-unpacked to its value type).
     TypeAlias(TypeAliasType<'db>),
     /// The set of Python objects that belong to a `typing.NewType` subtype. Note that
@@ -1288,6 +1290,10 @@ impl<'db> Type<'db> {
         matches!(self, Type::TypedDict(..))
     }
 
+    pub(crate) const fn is_typed_dict_like(&self) -> bool {
+        matches!(self, Type::TypedDict(..) | Type::TypedDictTop)
+    }
+
     pub(crate) const fn as_typed_dict(self) -> Option<TypedDictType<'db>> {
         match self {
             Type::TypedDict(typed_dict) => Some(typed_dict),
@@ -1557,6 +1563,7 @@ impl<'db> Type<'db> {
             | Type::TypeGuard(_)
             | Type::TypeVar(_)
             | Type::TypedDict(_)
+            | Type::TypedDictTop
             | Type::NewTypeInstance(_)
             | Type::NominalInstance(_)
             | Type::ProtocolInstance(_)
@@ -1626,7 +1633,8 @@ impl<'db> Type<'db> {
             | Type::DataclassTransformer(_)
             | Type::ClassLiteral(_)
             | Type::GenericAlias(_)
-            | Type::KnownInstance(_) => false,
+            | Type::KnownInstance(_)
+            | Type::TypedDictTop => false,
             Type::Union(union) => union.elements(db).iter().all(|ty| ty.is_spellable(db)),
         }
     }
@@ -1806,7 +1814,7 @@ impl<'db> Type<'db> {
                 recursive_type_normalize_type_guard_like(db, type_guard, div, nested)
             }
             Type::Dynamic(dynamic) => Some(Type::Dynamic(dynamic.recursive_type_normalized())),
-            Type::TypedDict(_) => {
+            Type::TypedDict(_) | Type::TypedDictTop => {
                 // TODO: Normalize TypedDicts
                 Some(self)
             }
@@ -2075,7 +2083,7 @@ impl<'db> Type<'db> {
             Type::AlwaysTruthy | Type::AlwaysFalsy => false,
             Type::TypeIs(type_is) => type_is.is_bound(db),
             Type::TypeGuard(type_guard) => type_guard.is_bound(db),
-            Type::TypedDict(_) => false,
+            Type::TypedDict(_) | Type::TypedDictTop => false,
             Type::TypeAlias(alias) => alias.value_type(db).is_singleton(db),
             Type::NewTypeInstance(newtype) => newtype.concrete_base_type(db).is_singleton(db),
         }
@@ -2155,7 +2163,8 @@ impl<'db> Type<'db> {
             | Type::PropertyInstance(_)
             | Type::DataclassDecorator(_)
             | Type::DataclassTransformer(_)
-            | Type::TypedDict(_) => false,
+            | Type::TypedDict(_)
+            | Type::TypedDictTop => false,
         }
     }
 
@@ -2284,6 +2293,7 @@ impl<'db> Type<'db> {
             | Type::TypeIs(_)
             | Type::TypeGuard(_)
             | Type::TypedDict(_)
+            | Type::TypedDictTop
             | Type::NewTypeInstance(_) => None,
         }
     }
@@ -2360,6 +2370,20 @@ impl<'db> Type<'db> {
                         )
                 }
             }
+
+            Type::TypedDictTop => KnownClass::TypedDictFallback
+                .to_class_literal(db)
+                .find_name_in_mro_with_policy(db, name.as_str(), policy)
+                .expect("`find_name_in_mro` should return `Some` for a class literal")
+                .map_type(|ty| {
+                    ty.apply_type_mapping(
+                        db,
+                        &TypeMapping::ReplaceSelf {
+                            new_upper_bound: Type::TypedDictTop,
+                        },
+                        TypeContext::default(),
+                    )
+                }),
 
             _ => self
                 .to_meta_type(db)
@@ -2469,6 +2493,9 @@ impl<'db> Type<'db> {
                 Place::Undefined.into()
             }
 
+            Type::TypedDictTop => KnownClass::TypedDictFallback
+                .to_instance(db)
+                .instance_member(db, name),
             Type::TypedDict(_) => Place::Undefined.into(),
 
             Type::TypeAlias(alias) => alias.value_type(db).instance_member(db, name),
@@ -3220,6 +3247,7 @@ impl<'db> Type<'db> {
             | Type::AlwaysFalsy
             | Type::TypeIs(..)
             | Type::TypeGuard(..)
+            | Type::TypedDictTop
             | Type::TypedDict(_) => {
                 // Enum members can be accessed through enum instances and other enum members,
                 // e.g. `answer.YES` or `Answer.YES.NO`.
@@ -3253,7 +3281,7 @@ impl<'db> Type<'db> {
                     policy,
                 );
 
-                if result.is_class_var() && self.is_typed_dict() {
+                if result.is_class_var() && self.is_typed_dict_like() {
                     // `ClassVar`s on `TypedDictFallback` cannot be accessed on inhabitants of `SomeTypedDict`.
                     // They can only be accessed on `SomeTypedDict` directly.
                     return Place::Undefined.into();
@@ -3900,6 +3928,7 @@ impl<'db> Type<'db> {
             | Type::ModuleLiteral(_)
             | Type::TypeIs(_)
             | Type::TypeGuard(_)
+            | Type::TypedDictTop
             | Type::TypedDict(_) => CallableBinding::not_callable(self).into(),
         }
     }
@@ -4988,6 +5017,7 @@ impl<'db> Type<'db> {
             | Type::TypeIs(_)
             | Type::TypeGuard(_)
             | Type::TypedDict(_)
+            | Type::TypedDictTop
             | Type::NewTypeInstance(_) => None,
         }
     }
@@ -5040,6 +5070,7 @@ impl<'db> Type<'db> {
             | Type::PropertyInstance(_)
             | Type::TypeIs(_)
             | Type::TypeGuard(_)
+            | Type::TypedDictTop
             | Type::TypedDict(_) => Err(InvalidTypeExpressionError {
                 invalid_expressions: smallvec_inline![InvalidTypeExpression::InvalidType(
                     *self, scope_id
@@ -5250,6 +5281,7 @@ impl<'db> Type<'db> {
             Type::AlwaysTruthy | Type::AlwaysFalsy => KnownClass::Type.to_instance(db),
             Type::BoundSuper(_) => KnownClass::Super.to_class_literal(db),
             Type::ProtocolInstance(protocol) => protocol.to_meta_type(db),
+            Type::TypedDictTop => KnownClass::Dict.to_class_literal(db),
             // `TypedDict` instances are instances of `dict` at runtime, but its important that we
             // understand a more specific meta type in order to correctly handle `__getitem__`.
             Type::TypedDict(typed_dict) => match typed_dict {
@@ -5271,7 +5303,7 @@ impl<'db> Type<'db> {
     /// instances of `dict` at runtime.
     #[must_use]
     pub(crate) fn dunder_class(self, db: &'db dyn Db) -> Type<'db> {
-        if self.is_typed_dict() {
+        if self.is_typed_dict_like() {
             return KnownClass::Dict
                 .to_specialized_class_type(db, &[KnownClass::Str.to_instance(db), Type::object()])
                 .map(Type::from)
@@ -5464,6 +5496,7 @@ impl<'db> Type<'db> {
             Type::TypedDict(typed_dict) => {
                 Type::TypedDict(typed_dict.apply_type_mapping_impl(db, type_mapping, tcx, visitor))
             }
+            Type::TypedDictTop => Type::TypedDictTop,
 
             Type::SubclassOf(subclass_of) => subclass_of.apply_type_mapping_impl(db, type_mapping, tcx, visitor),
 
@@ -5833,6 +5866,7 @@ impl<'db> Type<'db> {
             | Type::LiteralValue(_)
             | Type::BoundSuper(_)
             | Type::SpecialForm(_)
+            | Type::TypedDictTop
             | Type::TypedDict(_) => {}
         }
     }
@@ -6001,6 +6035,7 @@ impl<'db> Type<'db> {
                 Protocol::Synthesized(_) => None,
             },
 
+            Self::TypedDictTop => None,
             Self::TypedDict(typed_dict) => typed_dict.type_definition(db),
 
             Self::Union(_) | Self::Intersection(_) => None,
@@ -6204,6 +6239,7 @@ impl<'db> VarianceInferable<'db> for Type<'db> {
             | Type::AlwaysFalsy
             | Type::AlwaysTruthy
             | Type::BoundSuper(_)
+            | Type::TypedDictTop
             | Type::TypeVar(_)
             | Type::TypedDict(_)
             | Type::TypeAlias(_)
