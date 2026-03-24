@@ -671,7 +671,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             };
 
             self.add_binding(parameter.into(), definition)
-                .insert(self, ty);
+                .insert(self, parameter.into(), ty);
         }
     }
 
@@ -738,8 +738,11 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             );
         } else {
             let inferred_ty = Type::homogeneous_tuple(db, Type::unknown());
-            self.add_binding(parameter.into(), definition)
-                .insert(self, inferred_ty);
+            self.add_binding(parameter.into(), definition).insert(
+                self,
+                parameter.into(),
+                inferred_ty,
+            );
         }
     }
 
@@ -879,8 +882,11 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             let inferred_ty = KnownClass::Dict
                 .to_specialized_instance(db, &[KnownClass::Str.to_instance(db), Type::unknown()]);
 
-            self.add_binding(parameter.into(), definition)
-                .insert(self, inferred_ty);
+            self.add_binding(parameter.into(), definition).insert(
+                self,
+                parameter.into(),
+                inferred_ty,
+            );
         }
     }
 }

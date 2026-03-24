@@ -514,6 +514,24 @@ a_person = {"name": "Alice", "age": 30, "extra": True}
 (a_person := {"name": "Alice", "age": 30, "extra": True})
 ```
 
+Walrus expressions should also inherit the surrounding `TypedDict` context for their value:
+
+```py
+from typing import Any, TypedDict
+
+class Inner(TypedDict):
+    x: int
+
+class Outer(TypedDict):
+    inner: Inner
+
+outer1: Outer = {"inner": (inner1 := {"x": 1})}
+reveal_type(outer1)  # revealed: Outer
+
+outer2: Outer | dict[str, Any] = {"inner": (inner2 := {"x": 1})}
+reveal_type(outer2)  # revealed: Outer
+```
+
 ## Union of `TypedDict`
 
 When assigning to a union of `TypedDict` types, the type will be narrowed based on the dictionary
@@ -588,6 +606,9 @@ class NestedBar(TypedDict):
 
 x1: NestedFoo | NestedBar = {"foo": [{"foo": 1, "bar": 1}]}
 reveal_type(x1)  # revealed: NestedFoo | NestedBar
+
+x2: NestedFoo | NestedBar = {"foo": [(item := {"foo": 1, "bar": 1})]}
+reveal_type(x2)  # revealed: NestedFoo | NestedBar
 ```
 
 ## Type ignore compatibility issues

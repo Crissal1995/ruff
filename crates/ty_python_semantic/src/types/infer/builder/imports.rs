@@ -564,14 +564,20 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
 
         // Get this package's absolute module name by resolving `.`, and make sure it exists
         let Ok(thispackage_name) = ModuleName::package_for_file(db, self.file()) else {
-            self.add_binding(import_from.into(), definition)
-                .insert(self, Type::unknown());
+            self.add_binding(import_from.into(), definition).insert(
+                self,
+                import_from.into(),
+                Type::unknown(),
+            );
             return;
         };
 
         let Some(module) = resolve_module(db, self.file(), &thispackage_name) else {
-            self.add_binding(import_from.into(), definition)
-                .insert(self, Type::unknown());
+            self.add_binding(import_from.into(), definition).insert(
+                self,
+                import_from.into(),
+                Type::unknown(),
+            );
             return;
         };
 
@@ -595,8 +601,11 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 .next()
                 .and_then(ModuleName::new)
         }) else {
-            self.add_binding(import_from.into(), definition)
-                .insert(self, Type::unknown());
+            self.add_binding(import_from.into(), definition).insert(
+                self,
+                import_from.into(),
+                Type::unknown(),
+            );
             return;
         };
 
@@ -611,14 +620,20 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             // We explicitly don't introduce a *declaration* because it's actual ok
             // (and fairly common) to overwrite this import with a function or class
             // and we don't want it to be a type error to do so.
-            self.add_binding(import_from.into(), definition)
-                .insert(self, submodule_type);
+            self.add_binding(import_from.into(), definition).insert(
+                self,
+                import_from.into(),
+                submodule_type,
+            );
             return;
         }
 
         // That didn't work, try to produce diagnostics
-        self.add_binding(import_from.into(), definition)
-            .insert(self, Type::unknown());
+        self.add_binding(import_from.into(), definition).insert(
+            self,
+            import_from.into(),
+            Type::unknown(),
+        );
 
         if self
             .settings()
