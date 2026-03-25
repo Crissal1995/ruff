@@ -720,6 +720,13 @@ impl<'a, 'c, 'db> TypeRelationChecker<'a, 'c, 'db> {
                     })
             }
 
+            (
+                Type::KnownInstance(KnownInstanceType::FunctoolsPartial(source_callable)),
+                Type::KnownInstance(KnownInstanceType::FunctoolsPartial(target_callable)),
+            ) => self.with_recursion_guard(source, target, || {
+                self.check_callable_pair(db, source_callable, target_callable)
+            }),
+
             // Dynamic is only a subtype of `object` and only a supertype of `Never`; both were
             // handled above. It's always assignable, though.
             //
@@ -1100,6 +1107,22 @@ impl<'a, 'c, 'db> TypeRelationChecker<'a, 'c, 'db> {
             // only subtypes of each other if they result in the same signature.
             (Type::FunctionLiteral(source_function), Type::FunctionLiteral(target_function)) => {
                 self.check_function_pair(db, source_function, target_function)
+            }
+            (
+                Type::KnownInstance(KnownInstanceType::FunctoolsPartial(source_callable)),
+                Type::FunctionLiteral(target_function),
+            ) if matches!(
+                self.relation,
+                TypeRelation::Assignability | TypeRelation::ConstraintSetAssignability
+            ) =>
+            {
+                self.with_recursion_guard(source, target, || {
+                    self.check_callable_signature_pair(
+                        db,
+                        source_callable.signatures(db),
+                        target_function.into_callable_type(db).signatures(db),
+                    )
+                })
             }
             (Type::BoundMethod(source_method), Type::BoundMethod(target_method)) => {
                 self.check_bound_method_pair(db, source_method, target_method)
