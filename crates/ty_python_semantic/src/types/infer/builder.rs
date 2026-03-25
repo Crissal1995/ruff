@@ -101,8 +101,8 @@ use crate::types::subclass_of::SubclassOfInner;
 use crate::types::tuple::{Tuple, TupleLength, TupleSpecBuilder, TupleType};
 use crate::types::type_alias::{ManualPEP695TypeAliasType, PEP695TypeAliasType};
 use crate::types::typed_dict::{
-    TypedDictConstructorCallKind, typed_dict_constructor_call_kind,
-    validate_typed_dict_constructor, validate_typed_dict_dict_literal,
+    typed_dict_constructor_targets, validate_typed_dict_constructor,
+    validate_typed_dict_dict_literal,
 };
 use crate::types::typevar::{BoundTypeVarIdentity, TypeVarConstraints, TypeVarIdentity};
 use crate::types::{
@@ -5901,31 +5901,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         typed_dict: TypedDictType<'db>,
         item_types: &mut FxHashMap<NodeIndex, Type<'db>>,
     ) -> Option<Type<'db>> {
-        let ast::ExprDict {
-            range: _,
-            node_index: _,
-            items,
-        } = dict;
-
-        let typed_dict_items = typed_dict.items(self.db());
-
-        for item in items {
-            let key_ty = self.infer_optional_expression(item.key.as_ref(), TypeContext::default());
-            if let Some((key, key_ty)) = item.key.as_ref().zip(key_ty) {
-                item_types.insert(key.node_index().load(), key_ty);
-            }
-
-            let value_ty = if let Some(key_ty) = key_ty
-                && let Some(key) = key_ty.as_string_literal()
-                && let Some(field) = typed_dict_items.get(key.value(self.db()))
-            {
-                self.infer_expression(&item.value, TypeContext::new(Some(field.declared_ty)))
-            } else {
-                self.infer_expression(&item.value, TypeContext::default())
-            };
-
-            item_types.insert(item.value.node_index().load(), value_ty);
-        }
+        self.infer_typed_dict_item_types(dict, typed_dict, item_types);
 
         validate_typed_dict_dict_literal(&self.context, typed_dict, dict, dict.into(), |expr| {
             item_types
@@ -5935,6 +5911,33 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         })
         .ok()
         .map(|_| Type::TypedDict(typed_dict))
+    }
+
+    fn infer_typed_dict_item_types(
+        &mut self,
+        dict: &ast::ExprDict,
+        typed_dict: TypedDictType<'db>,
+        item_types: &mut FxHashMap<NodeIndex, Type<'db>>,
+    ) {
+        let typed_dict_items = typed_dict.items(self.db());
+
+        for item in &dict.items {
+            let key_ty = self.infer_optional_expression(item.key.as_ref(), TypeContext::default());
+            if let Some(key) = item.key.as_ref()
+                && let Some(key_ty) = key_ty
+            {
+                item_types.insert(key.node_index().load(), key_ty);
+            }
+
+            let value_tcx = key_ty
+                .and_then(Type::as_string_literal)
+                .and_then(|key| typed_dict_items.get(key.value(self.db())))
+                .map(|field| TypeContext::new(Some(field.declared_ty)))
+                .unwrap_or_default();
+
+            let value_ty = self.infer_expression(&item.value, value_tcx);
+            item_types.insert(item.value.node_index().load(), value_ty);
+        }
     }
 
     // Infer the type of a collection literal expression.
@@ -6948,8 +6951,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 &self.context,
                 typed_dict,
                 arguments,
+                None,
                 func.as_ref().into(),
-                |expr| self.expression_type(expr),
+                |expr, _| self.expression_type(expr),
             );
 
             return Type::TypedDict(typed_dict);
@@ -7227,18 +7231,11 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             .bindings(self.db())
             .match_parameters(self.db(), &call_arguments);
 
-        let typed_dict_constructor = class.and_then(|class| {
-            class
-                .class_literal(self.db())
-                .is_typed_dict(self.db())
-                .then_some(TypedDictType::new(class))
-        });
+        let typed_dict_constructor_targets =
+            typed_dict_constructor_targets(self.db(), callable_type);
 
-        let typed_dict_constructor_call_kind = typed_dict_constructor
-            .map(|_| typed_dict_constructor_call_kind(arguments))
-            .unwrap_or(TypedDictConstructorCallKind::Unsupported);
         let typed_dict_constructor_shape_supported =
-            typed_dict_constructor_call_kind != TypedDictConstructorCallKind::Unsupported;
+            typed_dict_constructor_targets.is_some() && arguments.args.len() <= 1;
 
         report_missing_implicit_constructor_call(
             &self.context,
@@ -7258,20 +7255,24 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
 
         // Validate `TypedDict` constructor calls after argument type inference.
         //
-        // Dict-literal positional args (e.g., `TD({"a": 1})`) are excluded here because the
-        // synthesized `__new__` mapping overload already handles them via normal callable checking.
-        if let Some(typed_dict) = typed_dict_constructor
+        // This remains the authoritative path for constructor diagnostics, even for
+        // dict-literal positional args. The synthesized overloads provide type context and make
+        // merge-form calls bind, but they intentionally stay permissive enough that validation
+        // here still needs to check the final constructor shape.
+        if let Some(typed_dict_targets) = typed_dict_constructor_targets.as_ref()
             && typed_dict_constructor_shape_supported
-            && typed_dict_constructor_call_kind
-                != TypedDictConstructorCallKind::PositionalDictLiteralOnly
         {
-            validate_typed_dict_constructor(
-                &self.context,
-                typed_dict,
-                arguments,
-                func.as_ref().into(),
-                |expr| self.expression_type(expr),
-            );
+            for typed_dict in typed_dict_targets {
+                let mut speculative = self.speculate();
+                validate_typed_dict_constructor(
+                    &self.context,
+                    *typed_dict,
+                    arguments,
+                    Some(&call_arguments),
+                    func.as_ref().into(),
+                    |expr, tcx| speculative.infer_expression(expr, tcx),
+                );
+            }
         }
 
         let mut bindings = match bindings_result {

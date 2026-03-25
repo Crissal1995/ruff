@@ -462,7 +462,7 @@ Constructor validation should also work when the call target is a union or inter
 `type[...]` values:
 
 ```py
-from typing import Union
+from typing import Any, List, Union
 from ty_extensions import Intersection
 
 class CtorRequired(TypedDict):
@@ -479,9 +479,8 @@ def _(ATD: Union[type[CtorRequired], type[CtorOptional]]):
     # error: [invalid-argument-type]
     bad = ATD(a="foo")
 
-    # 0-arg construction: valid for `CtorOptional` (all fields optional),
-    # but `CtorRequired` requires `a`.
-    # error: [no-matching-overload]
+    # 0-arg construction is still invalid because the `CtorRequired` arm requires `a`.
+    # error: [missing-typed-dict-key] "Missing required key 'a' in TypedDict `CtorRequired` constructor"
     no_args = ATD()
 
     # Dict-literal construction through a union.
@@ -507,12 +506,40 @@ def _(ATD: Intersection[type[CtorRequired], type[CtorOptional]]):
 
     # Dict-literal construction through an intersection.
     ok_dict = ATD({"a": 1})
+
+class CtorOverride(TypedDict, total=False):
+    a: str
+
+def _(ATD: Union[type[CtorRequired], type[CtorOptional]], override: CtorOverride):
+    ok_merge = ATD(override, a=1)
+    ok_literal_merge = ATD({"a": "wrong"}, a=1)
+
+class Comparison(TypedDict):
+    field: str
+    value: Any
+
+class LogicalA(TypedDict):
+    tag: str
+    conditions: List["Filter"]
+
+class LogicalB(TypedDict):
+    tag: str
+    conditions: List["Filter"]
+
+Filter = Union[Comparison, LogicalA, LogicalB]
+
+def _(T: Union[type[LogicalA], type[LogicalB]]):
+    ok_recursive = T(tag="x", conditions=[Comparison(field="a", value="b")])
+    ok_recursive_dict = T({"tag": "x", "conditions": [Comparison(field="a", value="b")]})
+    ok_recursive_merge = T({"conditions": [Comparison(field="a", value="b")]}, tag="x")
 ```
 
 TypedDict constructors also support the `dict(mapping, **kwargs)`-style merge form. Keyword
 arguments should override the positional mapping when validating the final shape:
 
 ```py
+from typing import Union
+
 class BaseKwargs(TypedDict, total=False):
     name: str
 
@@ -532,6 +559,35 @@ def _(base: BaseKwargs, override: OverrideCountKwargs):
 
     # error: [invalid-argument-type]
     bad_mapping = ChildKwargs(1, count=1)
+
+class UnionBaseLeft(TypedDict):
+    name: str
+
+class UnionBaseRight(TypedDict):
+    name: str
+
+class UnionChildKwargs(TypedDict):
+    name: str
+    count: int
+
+def _(base: Union[UnionBaseLeft, UnionBaseRight]):
+    ok_union_mapping = UnionChildKwargs(base, count=1)
+```
+
+Unpacked optional keys are not guaranteed to satisfy required target fields:
+
+```py
+from typing import TypedDict
+
+class MaybeName(TypedDict, total=False):
+    name: str
+
+class NeedsName(TypedDict):
+    name: str
+
+def _(maybe: MaybeName):
+    # error: [missing-typed-dict-key] "Missing required key 'name' in TypedDict `NeedsName` constructor"
+    NeedsName(**maybe)
 ```
 
 All of these have an invalid type for the `name` field:

@@ -4296,7 +4296,34 @@ impl<'db> Type<'db> {
                 constructor_instance_ty,
             );
 
-            CallableBinding::from_overloads(owner, [keyword_signature, positional_signature]).into()
+            // `TypedDict(mapping, **kwargs)` needs a permissive mapping parameter so keyword
+            // overrides can replace incompatible values from the positional mapping. The
+            // TypedDict-specific validator checks the merged result precisely after inference.
+            let mapping_and_keywords_signature = Signature::new(
+                Parameters::new(
+                    db,
+                    std::iter::once(
+                        Parameter::positional_only(Some(Name::new_static("mapping")))
+                            .with_annotated_type(Type::unknown()),
+                    )
+                    .chain(fields.iter().map(|(name, field)| {
+                        Parameter::keyword_only(name.clone())
+                            .with_annotated_type(field.declared_ty)
+                            .with_default_type(field.declared_ty)
+                    })),
+                ),
+                constructor_instance_ty,
+            );
+
+            CallableBinding::from_overloads(
+                owner,
+                [
+                    keyword_signature,
+                    positional_signature,
+                    mapping_and_keywords_signature,
+                ],
+            )
+            .into()
         }
         fn resolve_dunder_new_callable<'db>(
             db: &'db dyn Db,
