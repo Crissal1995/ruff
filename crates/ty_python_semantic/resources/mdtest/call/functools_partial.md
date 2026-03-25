@@ -230,6 +230,39 @@ p = partial(42)  # error: [invalid-argument-type]
 reveal_type(p)  # revealed: partial[Unknown]
 ```
 
+## Generic functions
+
+Type variables are inferred from the bound arguments:
+
+```py
+from functools import partial
+from typing import TypeVar
+
+T = TypeVar("T")
+
+def identity(x: T) -> T:
+    return x
+
+p = partial(identity, 1)
+reveal_type(p)  # revealed: partial[() -> int]
+```
+
+## Generic functions with remaining params
+
+```py
+from functools import partial
+from typing import TypeVar
+
+T = TypeVar("T")
+
+def pair(a: T, b: T) -> tuple[T, T]:
+    return (a, b)
+
+p = partial(pair, 1)
+reveal_type(p)  # revealed: partial[(b: int) -> tuple[int, int]]
+reveal_type(p(2))  # revealed: tuple[int, int]
+```
+
 ## Overloaded functions
 
 ```py
@@ -264,6 +297,27 @@ p = partial(g, start=".")
 paths: list[str] = ["x"]
 reveal_type(p)  # revealed: partial[(path: str, *, start: str | None = ".") -> str]
 reveal_type(list(map(p, paths)))  # revealed: list[str]
+```
+
+## ParamSpec callable bound with `partial`
+
+```py
+from functools import partial
+from typing import Any, Callable, TypeVar
+from typing_extensions import ParamSpec
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def invoke(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+    return func(*args, **kwargs)
+
+def pre(cfg: Any) -> Any:
+    return cfg
+
+bound = partial(invoke, pre)
+reveal_type(bound)  # revealed: partial[(cfg: Any) -> Any]
+reveal_type(bound({}))  # revealed: Any
 ```
 
 ## Partial assignability with a keyword-bound middle parameter
@@ -530,6 +584,24 @@ def f(a: int, b: str) -> bool:
 args: tuple[()] = ()
 p = partial(f, *args)
 reveal_type(p)  # revealed: partial[(a: int, b: str) -> bool]
+```
+
+## Generic function with multiple type variables
+
+Unresolved type variables are replaced with `Unknown` since the signature is fully specialized.
+
+```py
+from functools import partial
+from typing import TypeVar
+
+T = TypeVar("T")
+U = TypeVar("U")
+
+def combine(a: T, b: U) -> tuple[T, U]:
+    return (a, b)
+
+p = partial(combine, 1)
+reveal_type(p)  # revealed: partial[[U](b: U) -> tuple[int, U]]
 ```
 
 ## Callable object (class with `__call__`)
