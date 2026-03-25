@@ -5117,9 +5117,12 @@ impl<'db> Type<'db> {
                 KnownInstanceType::LiteralStringAlias(ty) => Ok(ty.inner(db)),
             },
 
-            Type::SpecialForm(special_form) => {
-                special_form.in_type_expression(db, scope_id, typevar_binding_context)
-            }
+            Type::SpecialForm(special_form) => special_form.in_type_expression(
+                db,
+                scope_id,
+                typevar_binding_context,
+                inference_flags,
+            ),
 
             Type::Union(union) => {
                 let mut builder = UnionBuilder::new(db);

@@ -8,6 +8,7 @@ use crate::semantic_index::{
     FileScopeId, definition::Definition, place_table, scope::ScopeId, semantic_index, use_def_map,
 };
 use crate::types::IntersectionType;
+use crate::types::infer::InferenceFlags;
 use crate::types::{
     CallableType, InvalidTypeExpression, InvalidTypeExpressionError, TypeDefinition,
     TypeQualifiers, generics::typing_self, infer::nearest_enclosing_class,
@@ -646,6 +647,7 @@ impl SpecialFormType {
         db: &'db dyn Db,
         scope_id: ScopeId<'db>,
         typevar_binding_context: Option<Definition<'db>>,
+        inference_flags: InferenceFlags,
     ) -> Result<Type<'db>, InvalidTypeExpressionError<'db>> {
         match self {
             Self::Never | Self::NoReturn => Ok(Type::Never),
@@ -728,15 +730,24 @@ impl SpecialFormType {
                 fallback_type: Type::unknown(),
             }),
 
-            Self::Annotated => Err(InvalidTypeExpressionError {
+            // `Concatenate` is just always invalid in this context in a type expression
+            Self::Concatenate
+                if !inference_flags.contains(InferenceFlags::ALLOW_PARAMSPEC_TYPE_EXPR) =>
+            {
+                Err(InvalidTypeExpressionError {
+                    invalid_expressions: smallvec::smallvec_inline![
+                        InvalidTypeExpression::Concatenate
+                    ],
+                    fallback_type: Type::unknown(),
+                })
+            }
+
+            // `Concatenate` can be valid in this context in a type expression,
+            // but type arguments weren't provided here.
+            Self::Annotated | Self::Concatenate => Err(InvalidTypeExpressionError {
                 invalid_expressions: smallvec::smallvec_inline![
                     InvalidTypeExpression::RequiresTwoArguments(self)
                 ],
-                fallback_type: Type::unknown(),
-            }),
-
-            Self::Concatenate => Err(InvalidTypeExpressionError {
-                invalid_expressions: smallvec::smallvec_inline![InvalidTypeExpression::Concatenate],
                 fallback_type: Type::unknown(),
             }),
 
