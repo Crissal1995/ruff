@@ -272,13 +272,7 @@ impl<'db> KnownInstanceType<'db> {
     /// `typing.TypeAliasType`, so `KnownInstanceType::TypeAliasType(_).instance_fallback(db)`
     /// returns `Type::NominalInstance(NominalInstanceType { class: <typing.TypeAliasType> })`.
     pub(super) fn instance_fallback(self, db: &'db dyn Db) -> Type<'db> {
-        match self {
-            Self::FunctoolsPartial(callable) => {
-                let return_ty = callable.signatures(db).overload_return_type_or_unknown(db);
-                KnownClass::FunctoolsPartial.to_specialized_instance(db, &[return_ty])
-            }
-            _ => self.class(db).to_instance(db),
-        }
+        self.class(db).to_instance(db)
     }
 
     /// Return `true` if this symbol is an instance of `class`.

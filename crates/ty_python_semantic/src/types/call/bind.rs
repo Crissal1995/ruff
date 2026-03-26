@@ -2185,66 +2185,69 @@ impl<'db> Bindings<'db> {
                                 Ok(bindings) => bindings,
                                 Err(CallError(_, bindings)) => *bindings,
                             };
-                            if !partial_bindings.is_single() {
+                            let can_synthesize_multi_binding_partial =
+                                partial_bindings.constructor_instance_type.is_some();
+                            if !partial_bindings.is_single()
+                                && !can_synthesize_multi_binding_partial
+                            {
                                 continue;
                             }
-                            if let Some(partial_binding) = partial_bindings.iter_flat_mut().next() {
+                            let mut new_overloads = Vec::new();
+                            let mut seen_overloads = FxHashSet::default();
+
+                            for partial_binding in partial_bindings.iter_flat_mut() {
                                 if partial_binding.overloads().is_empty() {
                                     continue;
                                 }
+
                                 for overload in &mut partial_binding.overloads {
                                     overload.retain_partial_application_errors();
                                 }
-                            }
-                            let partial_binding = partial_bindings
-                                .single_element()
-                                .expect("partial helper call should contain a single binding");
 
-                            let selected_overload_indexes = match partial_binding
-                                .matching_overload_index()
-                            {
-                                MatchingOverloadIndex::Single(index) => vec![index],
-                                MatchingOverloadIndex::Multiple(indexes) => indexes,
-                                MatchingOverloadIndex::None => {
-                                    if partial_binding.overloads().is_empty() {
-                                        continue;
-                                    }
-
-                                    let source_overload_index = partial_binding
-                                        .best_failing_overload_index(
-                                            FailingOverloadSelection::ReportableForPartial,
-                                        )
-                                        .unwrap_or(0);
-                                    let source_errors =
-                                        &partial_binding.overloads()[source_overload_index].errors;
-                                    for error in source_errors {
-                                        if error.is_relevant_for_partial_application() {
-                                            overload.errors.push(
-                                                error
-                                                    .clone()
-                                                    .maybe_apply_argument_index_offset(Some(1)),
-                                            );
+                                let selected_overload_indexes =
+                                    match partial_binding.matching_overload_index() {
+                                        MatchingOverloadIndex::Single(index) => vec![index],
+                                        MatchingOverloadIndex::Multiple(indexes) => indexes,
+                                        MatchingOverloadIndex::None => {
+                                            let source_overload_index = partial_binding
+                                                .best_failing_overload_index(
+                                                    FailingOverloadSelection::ReportableForPartial,
+                                                )
+                                                .unwrap_or(0);
+                                            let source_errors = &partial_binding.overloads()
+                                                [source_overload_index]
+                                                .errors;
+                                            for error in source_errors {
+                                                if error.is_relevant_for_partial_application() {
+                                                    let error = error
+                                                        .clone()
+                                                        .maybe_apply_argument_index_offset(Some(1));
+                                                    if !overload.errors.contains(&error) {
+                                                        overload.errors.push(error);
+                                                    }
+                                                }
+                                            }
+                                            (0..partial_binding.overloads().len()).collect()
                                         }
-                                    }
-                                    (0..partial_binding.overloads().len()).collect()
-                                }
-                            };
+                                    };
 
-                            let mut new_overloads =
-                                Vec::with_capacity(selected_overload_indexes.len());
-                            let signature_arguments =
-                                bound_call_arguments.with_self(partial_binding.bound_type);
-                            for index in selected_overload_indexes {
-                                let Some(bound_overload) = partial_binding.overloads().get(index)
-                                else {
-                                    continue;
-                                };
-                                new_overloads.push(
-                                    bound_overload.partially_applied_signature(
+                                let signature_arguments =
+                                    bound_call_arguments.with_self(partial_binding.bound_type);
+                                for index in selected_overload_indexes {
+                                    let Some(bound_overload) =
+                                        partial_binding.overloads().get(index)
+                                    else {
+                                        continue;
+                                    };
+                                    let signature = bound_overload.partially_applied_signature(
                                         db,
                                         signature_arguments.as_ref(),
-                                    ),
-                                );
+                                    );
+                                    let dedup_key = signature.clone().with_definition(None);
+                                    if seen_overloads.insert(dedup_key) {
+                                        new_overloads.push(signature);
+                                    }
+                                }
                             }
                             if new_overloads.is_empty() {
                                 continue;
@@ -5151,8 +5154,17 @@ impl<'db> Binding<'db> {
 
         let parameters = signature.parameters().as_slice();
         let return_ty = if signature.return_ty.is_none(db) {
-            self.constructor_instance_type
-                .unwrap_or(signature.return_ty)
+            self.constructor_instance_type.map_or(
+                signature.return_ty,
+                |constructor_instance_type| {
+                    self.partial_specialization.map_or(
+                        constructor_instance_type,
+                        |specialization| {
+                            constructor_instance_type.apply_specialization(db, specialization)
+                        },
+                    )
+                },
+            )
         } else {
             signature.return_ty
         };
@@ -5199,29 +5211,41 @@ impl<'db> Binding<'db> {
         }
 
         let mut remaining = Vec::with_capacity(parameters.len());
-        let mut keyword_only = Vec::new();
-        let mut keyword_variadic = Vec::new();
-        let mut saw_keyword_bound_positional_or_keyword = false;
+        let mut first_keyword_bound_positional_or_keyword = None;
         for (index, parameter) in parameters.iter().enumerate() {
             if remove_positionally_bound[index] {
                 continue;
             }
 
-            let mut parameter = keyword_defaults[index].map_or_else(
+            let parameter = keyword_defaults[index].map_or_else(
                 || parameter.clone(),
                 |default_ty| parameter.clone().with_default_type(default_ty),
             );
 
-            if keyword_bound[index]
+            if first_keyword_bound_positional_or_keyword.is_none()
+                && keyword_bound[index]
                 && matches!(parameter.kind(), ParameterKind::PositionalOrKeyword { .. })
             {
-                saw_keyword_bound_positional_or_keyword = true;
+                first_keyword_bound_positional_or_keyword = Some(remaining.len());
             }
 
+            remaining.push(parameter);
+        }
+
+        // Expand `P.args`/`P.kwargs` while the pair is still adjacent. The keyword-only reshuffle
+        // below can separate them, which would otherwise prevent expansion.
+        let remaining = expand_paramspec_variadics(db, remaining);
+
+        let mut reordered = Vec::with_capacity(remaining.len());
+        let mut keyword_only = Vec::new();
+        let mut keyword_variadic = Vec::new();
+        for (index, parameter) in remaining.into_iter().enumerate() {
+            let mut parameter = parameter;
             // Keyword-bound positional-or-keyword parameters can only be overridden by keyword at
             // call time. Once one appears, later positional-or-keyword parameters also become
             // keyword-only to match `inspect.signature(functools.partial(...))`.
-            if saw_keyword_bound_positional_or_keyword
+            if first_keyword_bound_positional_or_keyword
+                .is_some_and(|first_bound_index| index >= first_bound_index)
                 && matches!(parameter.kind(), ParameterKind::PositionalOrKeyword { .. })
             {
                 parameter = positional_or_keyword_to_keyword_only(&parameter);
@@ -5232,17 +5256,15 @@ impl<'db> Binding<'db> {
             } else if parameter.is_keyword_only() {
                 keyword_only.push(parameter);
             } else {
-                remaining.push(parameter);
+                reordered.push(parameter);
             }
         }
 
-        remaining.extend(keyword_only);
-        remaining.extend(keyword_variadic);
-
-        let remaining = expand_paramspec_variadics(db, remaining);
+        reordered.extend(keyword_only);
+        reordered.extend(keyword_variadic);
 
         signature
-            .with_parameters(Parameters::new(db, remaining))
+            .with_parameters(Parameters::new(db, reordered))
             .with_return_type(return_ty)
     }
 

@@ -263,6 +263,27 @@ reveal_type(p)  # revealed: partial[(b: int) -> tuple[int, int]]
 reveal_type(p(2))  # revealed: tuple[int, int]
 ```
 
+## Generic constructors
+
+```py
+from functools import partial
+from typing import Generic, TypeVar
+
+T = TypeVar("T")
+
+class Box(Generic[T]):
+    def __init__(self, value: T) -> None:
+        self.value = value
+
+list_factory = partial(list, [1])
+reveal_type(list_factory)  # revealed: partial[() -> list[int]]
+reveal_type(list_factory())  # revealed: list[int]
+
+box_factory = partial(Box, "hi")
+reveal_type(box_factory)  # revealed: partial[() -> Box[str]]
+reveal_type(box_factory())  # revealed: Box[str]
+```
+
 ## Overloaded functions
 
 ```py
@@ -318,6 +339,26 @@ def pre(cfg: Any) -> Any:
 bound = partial(invoke, pre)
 reveal_type(bound)  # revealed: partial[(cfg: Any) -> Any]
 reveal_type(bound({}))  # revealed: Any
+```
+
+## ParamSpec callable with keyword-bound wrapper parameters
+
+```py
+from functools import partial
+from typing import Callable, TypeVar
+from typing_extensions import ParamSpec
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def invoke(flag: int, func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+    return func(*args, **kwargs)
+
+def pre(*, cfg: str) -> int:
+    return 1
+
+bound = partial(invoke, flag=1, func=pre)
+reveal_type(bound(cfg="x"))  # revealed: int
 ```
 
 ## Partial assignability with a keyword-bound middle parameter
@@ -527,6 +568,23 @@ p = partial(f, **kwargs)
 reveal_type(p)  # revealed: partial[bool]
 ```
 
+## Fallback for kwargs splat with optional TypedDict keys
+
+```py
+from functools import partial
+from typing import TypedDict
+
+class MaybeKwargs(TypedDict, total=False):
+    b: str
+
+def f(a: int, *, b: str) -> None:
+    pass
+
+def make(kwargs: MaybeKwargs) -> None:
+    p = partial(f, **kwargs)
+    reveal_type(p)  # revealed: partial[None]
+```
+
 ## Nested partial
 
 ```py
@@ -553,6 +611,43 @@ class MyClass:
 
 p = partial(MyClass, 1)
 reveal_type(p)  # revealed: partial[(y: str) -> MyClass]
+```
+
+## Class constructor with both `__new__` and `__init__`
+
+```py
+from functools import partial
+
+class MyClass:
+    def __new__(cls, x: int) -> "MyClass":
+        return super().__new__(cls)
+    def __init__(self, x: int) -> None: ...
+
+p = partial(MyClass, 1)
+reveal_type(p)  # revealed: partial[() -> MyClass]
+p()
+p("extra")  # error: [too-many-positional-arguments]
+```
+
+## TODO: Class constructor where `__new__` and `__init__` disagree after partial binding
+
+This currently demonstrates why flattening constructor multi-bindings into overloads is not
+generally correct.
+
+```py
+from functools import partial
+
+class MyClass:
+    def __new__(cls, x: int) -> "MyClass":
+        return super().__new__(cls)
+    def __init__(self, x: int, y: str) -> None: ...
+
+p = partial(MyClass, 1)
+# TODO: should be `partial[(y: str) -> MyClass]`
+reveal_type(p)  # revealed: partial[Overload[() -> MyClass, (y: str) -> MyClass]]
+# TODO: should be error: [missing-argument]
+p()
+p("extra")
 ```
 
 ## Binding a default parameter

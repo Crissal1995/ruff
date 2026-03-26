@@ -257,7 +257,14 @@ impl<'a, 'db> CallArguments<'a, 'db> {
                         .and_then(|nominal| nominal.tuple_spec(db)),
                     Some(spec) if spec.as_fixed_length().is_some()
                 ),
-                Argument::Keywords => argument_ty.as_typed_dict().is_none(),
+                // Optional TypedDict keys may be absent at runtime, so we can only refine
+                // `partial(...)` when every expanded key is guaranteed to be present.
+                Argument::Keywords => argument_ty.as_typed_dict().is_none_or(|typed_dict| {
+                    typed_dict
+                        .items(db)
+                        .values()
+                        .any(|field| !field.is_required())
+                }),
                 Argument::Positional | Argument::Synthetic | Argument::Keyword(_) => false,
             }
         }) {

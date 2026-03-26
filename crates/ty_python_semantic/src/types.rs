@@ -3208,9 +3208,9 @@ impl<'db> Type<'db> {
             }
 
             Type::KnownInstance(KnownInstanceType::FunctoolsPartial(callable)) => {
-                let known_instance = KnownInstanceType::FunctoolsPartial(callable);
-                known_instance
-                    .instance_fallback(db)
+                let return_ty = callable.signatures(db).overload_return_type_or_unknown(db);
+                KnownClass::FunctoolsPartial
+                    .to_specialized_instance(db, &[return_ty])
                     .member_lookup_with_policy(db, name, policy)
             }
 
