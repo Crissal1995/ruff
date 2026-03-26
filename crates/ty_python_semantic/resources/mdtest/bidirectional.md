@@ -16,6 +16,7 @@ python-version = "3.12"
 ## Propagating target type annotation
 
 ```py
+from collections.abc import MutableSequence
 from typing import Literal
 
 def list1[T](x: T) -> list[T]:
@@ -64,6 +65,9 @@ reveal_type(f)  # revealed: tuple[list[Literal[1]], ...]
 
 g: tuple[list[Literal[1]], ...] = 3 * ((list1(1),) + (list1(1),))
 reveal_type(g)  # revealed: tuple[list[Literal[1]], ...]
+
+h: MutableSequence[int | str] = list1(1) * 3
+reveal_type(h)  # revealed: list[int | str]
 ```
 
 `typed_dict.py`:
