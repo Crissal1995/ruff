@@ -40,11 +40,11 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             node_index: _,
         } = binary;
 
-        let (left_ty, right_ty) = match self.infer_binary_expression_operand_types(left, *op, right)
-        {
-            BinaryExpressionOperandTypes::TypedDictResult(ty) => return ty,
-            BinaryExpressionOperandTypes::Inferred(left_ty, right_ty) => (left_ty, right_ty),
-        };
+        let (left_ty, right_ty) =
+            match self.infer_binary_expression_operand_types(left, *op, right, tcx) {
+                BinaryExpressionOperandTypes::TypedDictResult(ty) => return ty,
+                BinaryExpressionOperandTypes::Inferred(left_ty, right_ty) => (left_ty, right_ty),
+            };
 
         self.infer_binary_expression_type(binary.into(), false, left_ty, right_ty, *op)
             .unwrap_or_else(|| {
@@ -108,6 +108,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         left: &ast::Expr,
         op: ast::Operator,
         right: &ast::Expr,
+        tcx: TypeContext<'db>,
     ) -> BinaryExpressionOperandTypes<'db> {
         // When a dict literal is `|`'d with a TypedDict, infer the non-literal side first
         // so we can use bidirectional inference on the literal before calling the synthesized
@@ -133,7 +134,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             );
         }
 
-        let left_ty = self.infer_expression(left, TypeContext::default());
+        let left_ty = self.infer_expression(left, tcx);
         if op == ast::Operator::BitOr
             && let Type::TypedDict(typed_dict) = left_ty
             && matches!(right, ast::Expr::Dict(_))
@@ -147,10 +148,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             return BinaryExpressionOperandTypes::TypedDictResult(ty);
         }
 
-        BinaryExpressionOperandTypes::Inferred(
-            left_ty,
-            self.infer_expression(right, TypeContext::default()),
-        )
+        BinaryExpressionOperandTypes::Inferred(left_ty, self.infer_expression(right, tcx))
     }
 
     fn try_typed_dict_pep_584_dunder(

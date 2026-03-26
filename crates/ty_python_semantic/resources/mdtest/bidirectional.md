@@ -48,6 +48,22 @@ reveal_type(a)  # revealed: list[int]
 
 b: list[list[int]] = [[1], [2], *([3], [4])]
 reveal_type(b)  # revealed: list[list[int]]
+
+c: list[int | str] = list1(1) * 3
+reveal_type(c)  # revealed: list[int | str]
+
+d: list[int | str] = 3 * (list1(1) + list1(1))
+reveal_type(d)  # revealed: list[int | str]
+
+# Tuple elements are inferred individually, but type context can prevent e.g. `int` widening.
+e: tuple[list[Literal[1]]] = (list1(1),)
+reveal_type(e)  # revealed: tuple[list[Literal[1]]]
+
+f: tuple[list[Literal[1]], ...] = (list1(1),) * 3
+reveal_type(f)  # revealed: tuple[list[Literal[1]], ...]
+
+g: tuple[list[Literal[1]], ...] = 3 * ((list1(1),) + (list1(1),))
+reveal_type(g)  # revealed: tuple[list[Literal[1]], ...]
 ```
 
 `typed_dict.py`:
