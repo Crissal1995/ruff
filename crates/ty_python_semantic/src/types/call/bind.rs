@@ -5151,8 +5151,17 @@ impl<'db> Binding<'db> {
 
         let parameters = signature.parameters().as_slice();
         let return_ty = if signature.return_ty.is_none(db) {
-            self.constructor_instance_type
-                .unwrap_or(signature.return_ty)
+            self.constructor_instance_type.map_or(
+                signature.return_ty,
+                |constructor_instance_type| {
+                    self.partial_specialization.map_or(
+                        constructor_instance_type,
+                        |specialization| {
+                            constructor_instance_type.apply_specialization(db, specialization)
+                        },
+                    )
+                },
+            )
         } else {
             signature.return_ty
         };

@@ -727,6 +727,21 @@ impl<'a, 'c, 'db> TypeRelationChecker<'a, 'c, 'db> {
                 self.check_callable_pair(db, source_callable, target_callable)
             }),
 
+            // When checking `FunctoolsPartial <: functools.partial[T]`, we need to specialize
+            // the nominal instance with the partial's return type so the check is precise.
+            (
+                Type::KnownInstance(KnownInstanceType::FunctoolsPartial(callable)),
+                Type::NominalInstance(target_instance),
+            ) if target_instance
+                .class(db)
+                .is_known(db, KnownClass::FunctoolsPartial) =>
+            {
+                let return_ty = callable.signatures(db).overload_return_type_or_unknown(db);
+                let specialized =
+                    KnownClass::FunctoolsPartial.to_specialized_instance(db, &[return_ty]);
+                self.check_type_pair(db, specialized, target)
+            }
+
             // Dynamic is only a subtype of `object` and only a supertype of `Never`; both were
             // handled above. It's always assignable, though.
             //

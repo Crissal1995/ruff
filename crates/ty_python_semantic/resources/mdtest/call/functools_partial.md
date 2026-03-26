@@ -263,6 +263,27 @@ reveal_type(p)  # revealed: partial[(b: int) -> tuple[int, int]]
 reveal_type(p(2))  # revealed: tuple[int, int]
 ```
 
+## Generic constructors
+
+```py
+from functools import partial
+from typing import Generic, TypeVar
+
+T = TypeVar("T")
+
+class Box(Generic[T]):
+    def __init__(self, value: T) -> None:
+        self.value = value
+
+list_factory = partial(list, [1])
+reveal_type(list_factory)  # revealed: partial[() -> list[int]]
+reveal_type(list_factory())  # revealed: list[int]
+
+box_factory = partial(Box, "hi")
+reveal_type(box_factory)  # revealed: partial[() -> Box[str]]
+reveal_type(box_factory())  # revealed: Box[str]
+```
+
 ## Overloaded functions
 
 ```py
@@ -525,6 +546,23 @@ def f(a: int, b: str) -> bool:
 kwargs = {"a": 1}
 p = partial(f, **kwargs)
 reveal_type(p)  # revealed: partial[bool]
+```
+
+## Fallback for kwargs splat with optional TypedDict keys
+
+```py
+from functools import partial
+from typing import TypedDict
+
+class MaybeKwargs(TypedDict, total=False):
+    b: str
+
+def f(a: int, *, b: str) -> None:
+    pass
+
+def make(kwargs: MaybeKwargs) -> None:
+    p = partial(f, **kwargs)
+    reveal_type(p)  # revealed: partial[None]
 ```
 
 ## Nested partial
